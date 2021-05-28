@@ -15,6 +15,8 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("chip8-zig", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
+    exe.linkSystemLibrary("SDL2");
+    exe.linkSystemLibrary("c");
     pkgs.addAllTo(exe);
     exe.install();
 

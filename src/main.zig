@@ -1,6 +1,9 @@
 const clap = @import("clap");
 const std = @import("std");
-const Chip8 = @import("chip8.zig").Chip8;
+const chip8 = @import("chip8.zig");
+
+const Chip8 = chip8.Chip8;
+const testBit = chip8.testBit;
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -27,6 +30,10 @@ pub fn main() !u8 {
         clap.parseParam("-s, --scale <NUM>      Scaling integer value.") catch unreachable,
         clap.parseParam("<ROM>") catch unreachable,
     };
+
+    //
+    // Parse arguments
+    //
 
     var diag = clap.Diagnostic{};
     var args = clap.parse(clap.Help, &params, .{ .diagnostic = &diag }) catch |err| {
@@ -64,6 +71,16 @@ pub fn main() !u8 {
             break :blk positionals[0];
         }
     };
+
+    // Read ROM file
+
+    var rom_file = try std.fs.cwd().openFile(rom_path, .{ .read = true });
+    const rom = try rom_file.readToEndAlloc(&gpa.allocator, Chip8.MEM_SIZE);
+    defer gpa.allocator.free(rom);
+
+    //
+    // SDL Setup
+    //
 
     if (c.SDL_Init(c.SDL_INIT_VIDEO) != 0) {
         log.err("Unable to initialize SDL: {s}", .{c.SDL_GetError()});
@@ -108,9 +125,21 @@ pub fn main() !u8 {
     };
     defer c.SDL_DestroyTexture(texture);
 
-    var chip8 = try Chip8.init(&gpa.allocator);
-    defer chip8.deinit();
+    //
+    // Chip8 initialization
+    //
 
+    var seed: u64 = undefined;
+    try std.os.getrandom(std.mem.asBytes(&seed));
+    var c8 = try Chip8.init(&gpa.allocator, seed);
+    defer c8.deinit();
+    try c8.load_rom(rom);
+
+    //
+    // Main loop
+    //
+
+    var keypad: u16 = 0;
     var quit = false;
     while (!quit) {
         var event: c.SDL_Event = undefined;
@@ -123,6 +152,13 @@ pub fn main() !u8 {
             }
         }
 
+        try c8.frame(keypad);
+        // if c8.tone_on() {
+        //     device.resume();
+        // } else {
+        //     device.pause();
+        // }
+
         {
             var pixels: [*]u32 = undefined;
             var pitch: c_int = undefined;
@@ -132,14 +168,20 @@ pub fn main() !u8 {
             }
             var row_len = @divExact(@intCast(usize, pitch), 4); // RGBA8888 is 4 bytes
             var y: usize = 0;
-            while (y < 10) : (y += 1) {
+            while (y < Chip8.SCREEN_HEIGTH) : (y += 1) {
                 var row = pixels[y * row_len .. (y + 1) * row_len];
                 var x: usize = 0;
-                while (x < 10) : (x += 1) {
-                    if ((x + y) % 2 == 0) {
-                        row[x] = 0x00_00_00_00;
-                    } else {
-                        row[x] = 0xff_ff_ff_ff;
+                while (x < Chip8.SCREEN_WIDTH / 8) : (x += 1) {
+                    const byte = c8.framebuffer()[y * Chip8.SCREEN_WIDTH / 8 + x];
+                    var i: usize = 0;
+                    while (i < 8) : (i += 1) {
+                        const offset = x * 8 + i;
+                        const on = if (testBit(byte, 7 - i)) true else false;
+                        if (on) {
+                            row[offset] = 0xff_ff_ff_ff;
+                        } else {
+                            row[offset] = 0x00_00_00_00;
+                        }
                     }
                 }
             }
@@ -153,7 +195,7 @@ pub fn main() !u8 {
 
         c.SDL_RenderPresent(renderer);
 
-        time.sleep(1_666 * time.ns_per_us);
+        time.sleep(chip8.FRAME_TIME * time.ns_per_us);
     }
     return 0;
 }

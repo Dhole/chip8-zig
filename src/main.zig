@@ -1,5 +1,6 @@
 const clap = @import("clap");
 const std = @import("std");
+const Chip8 = @import("chip8.zig").Chip8;
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -19,9 +20,6 @@ fn help(params: []const clap.Param(clap.Help)) !void {
     try stderr.print("\n", .{});
     try clap.help(stderr, params);
 }
-
-const SCREEN_WIDTH: usize = 64;
-const SCREEN_HEIGTH: usize = 32;
 
 pub fn main() !u8 {
     const params = comptime [_]clap.Param(clap.Help){
@@ -77,8 +75,8 @@ pub fn main() !u8 {
         "chip8-zig by Dhole",
         c.SDL_WINDOWPOS_UNDEFINED,
         c.SDL_WINDOWPOS_UNDEFINED,
-        @intCast(c_int, scale * SCREEN_WIDTH),
-        @intCast(c_int, scale * SCREEN_HEIGTH),
+        @intCast(c_int, scale * Chip8.SCREEN_WIDTH),
+        @intCast(c_int, scale * Chip8.SCREEN_HEIGTH),
         c.SDL_WINDOW_OPENGL,
     ) orelse
         {
@@ -102,13 +100,16 @@ pub fn main() !u8 {
         renderer,
         c.SDL_PIXELFORMAT_RGBA8888,
         c.SDL_TEXTUREACCESS_STREAMING,
-        SCREEN_WIDTH,
-        SCREEN_HEIGTH,
+        Chip8.SCREEN_WIDTH,
+        Chip8.SCREEN_HEIGTH,
     ) orelse {
         log.err("Unable to create texture from surface: {s}", .{c.SDL_GetError()});
         return 2;
     };
     defer c.SDL_DestroyTexture(texture);
+
+    var chip8 = try Chip8.init(&gpa.allocator);
+    defer chip8.deinit();
 
     var quit = false;
     while (!quit) {

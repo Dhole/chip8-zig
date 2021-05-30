@@ -24,6 +24,44 @@ fn help(params: []const clap.Param(clap.Help)) !void {
     try clap.help(stderr, params);
 }
 
+fn key_map(sym: c.SDL_Keycode) u16 {
+    return switch (sym) {
+        c.SDLK_1 => 1 << 0x1,
+        c.SDLK_2 => 1 << 0x2,
+        c.SDLK_3 => 1 << 0x3,
+        c.SDLK_4 => 1 << 0xC,
+        c.SDLK_q => 1 << 0x4,
+        c.SDLK_w => 1 << 0x5,
+        c.SDLK_e => 1 << 0x6,
+        c.SDLK_r => 1 << 0xD,
+        c.SDLK_a => 1 << 0x7,
+        c.SDLK_s => 1 << 0x8,
+        c.SDLK_d => 1 << 0x9,
+        c.SDLK_f => 1 << 0xE,
+        c.SDLK_z => 1 << 0xA,
+        c.SDLK_x => 1 << 0x0,
+        c.SDLK_c => 1 << 0xB,
+        c.SDLK_v => 1 << 0xF,
+        else => @as(u16, 0),
+    };
+}
+
+const AUDIO_FREQ: c_int = 44100;
+const PHASE_INC: c_int = std.math.maxInt(c_int) / AUDIO_FREQ * 440;
+const VOL: i16 = 0x20_00; // 25% of std.math.maxInt(i16)
+
+fn square_wave_audio_cb(user_data: ?*c_void, raw_buffer: [*c]u8, bytes: c_int) callconv(.C) void {
+    var buffer = @ptrCast([*c]i16, @alignCast(@alignOf(*i16), raw_buffer));
+    const length = @intCast(usize, bytes) / 2; // 2 bytes per sample for AUDIO_S16SYS
+    var phase = @ptrCast(*c_int, @alignCast(@alignOf(c_int), user_data));
+
+    var i: usize = 0;
+    while (i < length) : (i += 1) {
+        buffer[i] = if (phase.* < 0) -VOL else VOL;
+        phase.* +%= PHASE_INC;
+    }
+}
+
 pub fn main() !u8 {
     const params = comptime [_]clap.Param(clap.Help){
         clap.parseParam("-h, --help             Display this help and exit.              ") catch unreachable,
@@ -82,7 +120,7 @@ pub fn main() !u8 {
     // SDL Setup
     //
 
-    if (c.SDL_Init(c.SDL_INIT_VIDEO) != 0) {
+    if (c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO) != 0) {
         log.err("Unable to initialize SDL: {s}", .{c.SDL_GetError()});
         return 2;
     }
@@ -125,6 +163,29 @@ pub fn main() !u8 {
     };
     defer c.SDL_DestroyTexture(texture);
 
+    var phase: c_int = 0;
+    var want = c.SDL_AudioSpec{
+        .freq = AUDIO_FREQ,
+        .format = c.AUDIO_S16SYS,
+        .channels = 1,
+        .samples = 2048,
+        .callback = square_wave_audio_cb,
+        .userdata = &phase,
+        .silence = undefined,
+        .padding = undefined,
+        .size = undefined,
+    };
+    var have: c.SDL_AudioSpec = undefined;
+    if (c.SDL_OpenAudio(&want, &have) != 0) {
+        log.err("Unable to open audio: {s}", .{c.SDL_GetError()});
+        return 4;
+    }
+    defer c.SDL_CloseAudio();
+    if (want.format != have.format) {
+        log.err("Unable to get desired AudioSpec", .{});
+        return 4;
+    }
+
     //
     // Chip8 initialization
     //
@@ -140,24 +201,34 @@ pub fn main() !u8 {
     //
 
     var keypad: u16 = 0;
+    var timestamp = time.nanoTimestamp();
     var quit = false;
     while (!quit) {
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event) != 0) {
-            switch (event.@"type") {
+            switch (event.type) {
                 c.SDL_QUIT => {
                     quit = true;
+                },
+                c.SDL_KEYDOWN => {
+                    if (event.key.keysym.sym == c.SDLK_ESCAPE) {
+                        quit = true;
+                    }
+                    keypad |= key_map(event.key.keysym.sym);
+                },
+                c.SDL_KEYUP => {
+                    keypad &= ~key_map(event.key.keysym.sym);
                 },
                 else => {},
             }
         }
 
         try c8.frame(keypad);
-        // if c8.tone_on() {
-        //     device.resume();
-        // } else {
-        //     device.pause();
-        // }
+        if (c8.tone_on()) {
+            c.SDL_PauseAudio(0);
+        } else {
+            c.SDL_PauseAudio(1);
+        }
 
         {
             var pixels: [*]u32 = undefined;
@@ -195,7 +266,10 @@ pub fn main() !u8 {
 
         c.SDL_RenderPresent(renderer);
 
-        time.sleep(chip8.FRAME_TIME * time.ns_per_us);
+        const now = time.nanoTimestamp();
+        const sleep_dur = chip8.FRAME_TIME * time.ns_per_us - (now - timestamp);
+        time.sleep(if (sleep_dur > 0) @intCast(u64, sleep_dur) else 0);
+        timestamp = now;
     }
     return 0;
 }
